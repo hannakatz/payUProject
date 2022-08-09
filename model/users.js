@@ -4,54 +4,68 @@ var HashMap = require("hashmap");
 const { resourceLimits } = require("worker_threads");
 const NodeCache = require("node-cache");
 const { table } = require("console");
-const myCache = new NodeCache({ stdTTL: 100 });
 
+const myCache = new NodeCache({ stdTTL: 100 });
 var usersTable = new HashMap();
 var agesTable = new HashMap();
 var countrysTable = new HashMap();
 var namesTable = new HashMap();
 let usersToDelete = [];
 
-function insertDataById(table, data, id) {
-  if (table.has(data)) {
-    table.get(data).push(id);
-  } else {
-    table.set(data, [id]);
+function insertDataById(table, key, id) {
+  if (table.has(key)) {
+    if (!table.get(key).includes(id)) {
+      table.get(key).push(id);
+    }
+  }
+  else {
+    table.set(key, [id]);
   }
 }
-function usersDataIds(table, data) {
+
+function calculateAge(dob) {
+  var diffMs = Date.now() - dob.getTime();
+  var ageDt = new Date(diffMs);
+
+  return Math.abs(ageDt.getUTCFullYear() - 1970);
+}
+function GetUsersDateFromCsv() {
+
+  fs.createReadStream("data.csv")
+    .pipe(csv({}))
+    .on("data", (data) => {
+      //----set the main table----
+      usersTable.set(data.Id, data);
+      //----set the age table----
+      const [day, month, year] = data.DOB.split("/");
+      let converDataToAge = calculateAge(new Date(+year, +month - 1, +day));
+      insertDataById(agesTable, converDataToAge, data.Id);
+      //----set the country table----
+      insertDataById(countrysTable, data.Country, data.Id);
+      //----set the name table----
+      let name = data.Name.toLowerCase();
+      let firstName = name.substring(0, 3);
+      let lastName = name.substr(name.indexOf(" ") + 1).substring(0, 3);
+      // fix remove this line 
+      insertDataById(namesTable, lastName, data.Id);
+      insertDataById(namesTable, firstName, data.Id);
+    });
+}
+function usersIds(table, data) {
+
   if (myCache.has(data)) {
     myCache.ttl(data, 100);
     console.log("cache");
     return myCache.get(data);
-  } else if (table.has(data)) {
+  }
+  else if (table.has(data)) {
     myCache.set(data, table.get(data));
     console.log("table");
     return table.get(data);
-  } else {
-    return -1;
   }
+  return -1;
 }
 
-fs.createReadStream("data.csv")
-  .pipe(csv({}))
-  .on("data", (data) => {
-    //----set the main table----
-    usersTable.set(data.Id, data);
-    //----set the age table----
-    let converDataToAge = 2022 - parseInt(data.DOB.split("/").pop());
-    insertDataById(agesTable, converDataToAge, data.Id);
-    //----set the country table----
-    insertDataById(countrysTable, data.Country, data.Id);
-    //----set the name table----
-    let name = data.Name.toLowerCase();
-    firstName = name.substring(0, 3);
-    lastName = name.substr(name.indexOf(" ") + 1).substring(0, 3);
-    if (firstName !== lastName) {
-      insertDataById(namesTable, lastName, data.Id);
-    }
-    insertDataById(namesTable, firstName, data.Id);
-  });
 
 module.exports = {
   getUserById: async function (id) {
@@ -60,23 +74,24 @@ module.exports = {
     if (myCache.has(id)) {
       myCache.ttl(id, 100);
       return myCache.get(id);
-    } else if (usersTable.has(id)) {
+    }
+    else if (usersTable.has(id)) {
       myCache.set(id, usersTable.get(id));
       return usersTable.get(id);
-    } else {
-      return `No user exists with id: ${id}`;
     }
+    return `No user exists with id: ${id}`;
   },
 
   getUsersByAge: async function (age) {
     let usersRes = [];
     console.log(`getUsersByAge called with age: ${age}`);
-
+    // --- Checking age validation ---
     if (parseInt(age) < 0 || parseInt(age) > 121 || isNaN(age)) {
       return `Invalid value : ${age}`;
     }
-    usersAgeIds = usersDataIds(agesTable, parseInt(age));
-    console.log(usersAgeIds);
+
+    let usersAgeIds = usersIds(agesTable, parseInt(age));
+
     if (usersAgeIds == -1) {
       return `No user exists with the age: ${age}`;
     }
@@ -90,12 +105,13 @@ module.exports = {
   getUsersByCountry: async function (country) {
     let usersRes = [];
     console.log(`getUsersByCountry called with country: ${country}`);
-    // Add implementation here
-    const validInput = /^([a-zA-Z])+\s*([a-zA-Z])*$/;
+    // --- Checking country validation ---
+    const validInput = /^[A-Z][A-Z]$/;
     if (validInput.test(country) === false) {
       return `Invalid Input: ${country}`;
     }
-    usersCountryIds = usersDataIds(countrysTable, country);
+
+    let usersCountryIds = usersIds(countrysTable, country);
 
     if (usersCountryIds == -1) {
       return `No user exists in the country: ${country}`;
@@ -108,6 +124,7 @@ module.exports = {
   },
 
   getUsersByName: async function (name) {
+    // --- Checking name validation ---
     const validInput = /^([a-zA-Z])+\s*([a-zA-Z])*$/;
     if (validInput.test(name) === false) {
       return `Invalid Input: ${name}`;
@@ -120,9 +137,9 @@ module.exports = {
     console.log(`searchUsersByName called with name: ${name}`);
 
     // Add implementation here
-    usersNameIds = usersDataIds(namesTable, firstTreeNameLetters);
+    let usersNameIds = usersIds(namesTable, firstTreeNameLetters);
     if (usersNameIds == -1) {
-      return `No such user exists: ${country}`;
+      return `No such user exists: ${name}`;
     }
 
     for (const user of usersNameIds) {
@@ -132,30 +149,32 @@ module.exports = {
         usersRes.push(usersTable.get(user));
       }
     }
+    if (usersRes.length === 0) {
+      return `No such user exists: ${name}`;
+    }
     return usersRes;
   },
 
   deleteUser: async function (id) {
-    console.log(`deleteUser called with id: ${id}`);
+    console.log(`Delete user called with id: ${id}`);
     // Add implementation here
-    if (usersTable.has(id)) {
-      usersToDelete.push(usersTable.get(id));
-      usersTable.delete(id);
-    } else {
+    if (!usersTable.has(id)) {
       return `No user exists with id: ${id}`;
     }
-    return;
+    usersToDelete.push(usersTable.get(id));
+    usersTable.delete(id);
   },
 };
 
-function removeIdFromList(table, data, id) {
-  if (table.has(data)) {
-    usersIds = table.get(data);
+function removeIdFromList(table, key, id) {
+  if (table.has(key)) {
+    usersIds = table.get(key);
     usersIds.splice(usersIds.indexOf(id), 1);
-  } else if (myCache.has(data)) {
+  }
+  if (myCache.has(key)) {
     myCache.delete(data);
   }
-  return;
+
 }
 
 function intervalFunc() {
@@ -163,12 +182,13 @@ function intervalFunc() {
     console.log("user delete!");
     for (const index in usersToDelete) {
       user = usersToDelete[index];
-      let age = 2022 - parseInt(user.DOB.split("/").pop());
+      const [day, month, year] = user.DOB.split("/");
+      let converDataToAge = calculateAge(new Date(+year, +month - 1, +day));
       let name = user.Name.toLowerCase();
-      firstName = name.substring(0, 3);
-      lastName = name.substr(name.indexOf(" ") + 1).substring(0, 3);
+      let firstName = name.substring(0, 3);
+      let lastName = name.substr(name.indexOf(" ") + 1).substring(0, 3);
 
-      removeIdFromList(agesTable, age, user.Id);
+      removeIdFromList(agesTable, converDataToAge, user.Id);
       removeIdFromList(countrysTable, user.Country, user.Id);
       if (firstName !== lastName) {
         removeIdFromList(namesTable, lastName, user.Id);
@@ -183,3 +203,5 @@ function intervalFunc() {
 }
 
 setInterval(intervalFunc, 1500);
+
+GetUsersDateFromCsv();
